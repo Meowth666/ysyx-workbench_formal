@@ -5,6 +5,7 @@
 #include "../include/common.h"
 
 int flag = 0;
+uint32_t csr[4096];
 VerilatedContext* contextp = new VerilatedContext;
 VerilatedFstC* tfp = new VerilatedFstC;
 Vtop* top = new Vtop{contextp};
@@ -62,6 +63,35 @@ svBitVecVal addr_read(const svBitVecVal* pc){
 	return instruction;
 }
 
+svBitVecVal ecall_read(const svBitVecVal* pc, const svBitVecVal* type_p){
+	if(*type_p == 11){
+		//printf("ecall: %x\n", *pc);
+		csr[MEPC] = (uint32_t)*pc;
+		csr[MCAUSE] = 11;
+		assert(csr[MTVEC] != 0);
+		return csr[MTVEC];
+	}
+	if(*type_p == 12){
+		// printf("mret: %x\n", *pc);
+		// printf("%x\n", csr[MEPC]);
+		return csr[MEPC];
+	}
+	return 0;
+}
+
+svBitVecVal csr_read(const svBitVecVal* rs1, const svBitVecVal* imm, const svBitVecVal* sw){
+	if(*sw == 11){
+		svBitVecVal t = csr[*imm];
+		csr[*imm] = *rs1;
+		return t;
+	}
+	if(*sw == 12){
+		svBitVecVal t = csr[*imm];
+		csr[*imm] = t | *rs1;
+		return t;
+	}
+	return 0;
+}
 
 int cpu_init(int argc, char** argv){
     contextp->commandArgs(argc, argv);
@@ -72,44 +102,51 @@ int cpu_init(int argc, char** argv){
 	return 0;
 }
 int cpu_exec(int n){
+	int pc_data;
 	FILE *itrace=fopen("outputs/itrace.txt","w");
 	if(MTRACE){
 		FILE *mtrace_Write=fopen("outputs/mtrace.txt","w");
 		fclose(mtrace_Write);
 	} 
-	for(int i = 0; i < 2 * n; i++){
+	for(int i = -3; i < 2 * n; i++){
 		//printf("i = %d\n", i);
 		if(top -> clock){
-			int pc_data = new_reg();
-			uint32_t rs1_data, rs2_data, imm_data;
-			svScope scope = svGetScopeFromName("TOP.ysyx_25030077_top.i5");
-			svSetScope(scope);
-			rs1_data = (uint32_t)reg_read_rs1();
-			rs2_data = (uint32_t)reg_read_rs2();
-			imm_data = (SEXT((int64_t)BITS(insn32, 31, 25), 7) << 5) | BITS(insn32, 11, 7);
-			switch(is_S(insn32))
-			{
-				case 1:
-					// printf("%x %x\n", rs1_data + imm_data, rs2_data);
-					write_addr(rs1_data + imm_data, rs2_data, 4);
-					break;
-				case 2:
-					write_addr(rs1_data + imm_data, rs2_data, 2);
-					break;
-				case 3:
-					write_addr(rs1_data + imm_data, rs2_data, 1);
-					break;
-				default:
-					break;
+			svScope scope;
+			if(is_S(insn32) > 0){
+				uint32_t rs1_data, rs2_data, imm_data;
+				scope = svGetScopeFromName("TOP.ysyx_25030077_top.i5");
+				svSetScope(scope);
+				rs1_data = (uint32_t)reg_read_rs1();
+				rs2_data = (uint32_t)reg_read_rs2();
+				imm_data = (SEXT((int64_t)BITS(insn32, 31, 25), 7) << 5) | BITS(insn32, 11, 7);
+				switch(is_S(insn32))
+				{
+					case 1:
+						// printf("%x %x\n", rs1_data + imm_data, rs2_data);
+						write_addr(rs1_data + imm_data, rs2_data, 4);
+						break;
+					case 2:
+						write_addr(rs1_data + imm_data, rs2_data, 2);
+						break;
+					case 3:
+						write_addr(rs1_data + imm_data, rs2_data, 1);
+						break;
+					default:
+						break;
+				}
 			}
-			if(i >= 1 && insn32 != 0 && ITRACE){
+			if(insn32 != 0 && ITRACE){
+				pc_data = new_reg();
 				print_itrace(itrace, pc_data, insn32);
 			}
-			uint32_t dnpc_data;
-			scope = svGetScopeFromName("TOP.ysyx_25030077_top.i7");
-			svSetScope(scope);
-			dnpc_data = (uint32_t)dnpc_read_data();
-			ftrace_check(pc_data, dnpc_data, insn32);
+			if(FTRACE){
+				pc_data = new_reg();
+				uint32_t dnpc_data;
+				scope = svGetScopeFromName("TOP.ysyx_25030077_top.i7");
+				svSetScope(scope);
+				dnpc_data = (uint32_t)dnpc_read_data();
+				ftrace_check(pc_data, dnpc_data, insn32);
+			}
 		}
 		if(i == 3){
 			top -> reset = 0;
@@ -118,6 +155,9 @@ int cpu_exec(int n){
 		step_and_dump_wave();
 		if(flag){
 			break;
+		}
+		if (n < 0){
+			i = i - 1; // 如果n < 0，表示一直执行
 		}
 	} 
 	fclose(itrace);          
